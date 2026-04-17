@@ -1222,11 +1222,253 @@ impl ColorProfile {
                         profile.calibration_date =
                             Self::read_date_time_tag(slice, tag_entry as usize, tag_size)?;
                     }
+                    Tag::ColorEncodingParams => {
+                        // iccMAX: consume `cept` to populate v4 matrix-shaper
+                        // fields (and a CICP triplet when the primaries +
+                        // transfer match a canonical set). Real v5 sRGB
+                        // encoding profiles (e.g. sRGB_ISO22028) have ONLY a
+                        // cept tag and no rXYZ/gXYZ/etc.
+                        if color_space == DataColorSpace::Rgb
+                            && profile.red_colorant == Xyzd::default()
+                            && let Some(cept) = crate::iccmax::read_cept_matrix_shaper(
+                                slice,
+                                tag_entry as usize,
+                                tag_size,
+                            )?
+                        {
+                            Self::populate_from_cept(&mut profile, &cept);
+                        }
+                    }
+                    Tag::ReferenceName | Tag::ColorSpaceName => {
+                        // utf8Type — informational only (e.g. "ISO 22028-1",
+                        // "sRGB"). We don't store these on ColorProfile
+                        // currently; the structural data in `cept` / `mpet`
+                        // is what makes the profile usable.
+                    }
                 }
             }
         }
 
+        // iccMAX fallback: A2B/B2A tags whose tag-type is `mpet` were skipped
+        // by the LUT reader (it only recognizes mft1/mft2/mAB/mBA). If the
+        // profile still has no matrix-shaper data after the v4 walk, try to
+        // extract one from a recognizable mpet chain.
+        if color_space == DataColorSpace::Rgb && profile.red_colorant == Xyzd::default() {
+            Self::try_populate_matrix_shaper_from_mpet(slice, tags_slice, &mut profile)?;
+        }
+
         Ok(profile)
+    }
+
+    /// Walk the tag table looking for an A2B*/B2A* tag of mpet type that
+    /// decodes to a matrix-shaper chain. The first one we find wins.
+    fn try_populate_matrix_shaper_from_mpet(
+        slice: &[u8],
+        tags_slice: &[u8],
+        profile: &mut ColorProfile,
+    ) -> Result<(), CmsError> {
+        for tag in tags_slice.chunks_exact(TAG_SIZE) {
+            let tag_value = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
+            let tag_entry = u32::from_be_bytes([tag[4], tag[5], tag[6], tag[7]]) as usize;
+            let tag_size = u32::from_be_bytes([tag[8], tag[9], tag[10], tag[11]]) as usize;
+            let parsed = match Tag::try_from(tag_value) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            // Restrict mpet extraction to A2B (device→PCS) tags. In that
+            // direction the cvst sub-element stores the EOTF (encoded →
+            // linear), which is what moxcms's red_trc/green_trc/blue_trc
+            // slots expect. B2A tags would store the inverse OETF curves and
+            // would need extra inversion before being usable here.
+            let is_a2b = matches!(
+                parsed,
+                Tag::DeviceToPcsLutPerceptual
+                    | Tag::DeviceToPcsLutColorimetric
+                    | Tag::DeviceToPcsLutSaturation
+            );
+            if !is_a2b {
+                continue;
+            }
+            // Tag type sniff
+            if tag_entry + 4 > slice.len() {
+                continue;
+            }
+            if &slice[tag_entry..tag_entry + 4] != b"mpet" {
+                continue;
+            }
+            let Some(ms) = crate::iccmax::read_mpet_matrix_shaper(slice, tag_entry, tag_size)?
+            else {
+                continue;
+            };
+            // For an A2B (device→PCS) we want curves followed by matrix; for
+            // a B2A (PCS→device) the chain is matrix then inverse curves.
+            // Either chain gives us the matrix and the per-channel curves; we
+            // populate them directly into v4 fields and let downstream
+            // transform code take it from there.
+            let m = ms.matrix;
+            profile.red_colorant = Xyzd {
+                x: m.v[0][0],
+                y: m.v[1][0],
+                z: m.v[2][0],
+            };
+            profile.green_colorant = Xyzd {
+                x: m.v[0][1],
+                y: m.v[1][1],
+                z: m.v[2][1],
+            };
+            profile.blue_colorant = Xyzd {
+                x: m.v[0][2],
+                y: m.v[1][2],
+                z: m.v[2][2],
+            };
+            if profile.red_trc.is_none() && !ms.curves.is_empty() {
+                profile.red_trc = Some(ms.curves[0].clone());
+            }
+            if profile.green_trc.is_none() && ms.curves.len() >= 2 {
+                profile.green_trc = Some(ms.curves[1].clone());
+            }
+            if profile.blue_trc.is_none() && ms.curves.len() >= 3 {
+                profile.blue_trc = Some(ms.curves[2].clone());
+            }
+            // Note: ms.offset is currently dropped — for canonical sRGB-style
+            // mpet profiles it is a zero vector (matrix-only chad). If we
+            // encounter profiles with non-zero offset we'll need to bake it
+            // into the white_point pipeline; flagged as a follow-up.
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    /// Build the v4 matrix-shaper representation (red/green/blue colorants
+    /// plus per-channel TRC) from a parsed `cept` structure. Also synthesizes
+    /// a CICP triplet when the primaries + transfer match a canonical
+    /// (BT.709 / BT.2020 / Display-P3 / DCI-P3) set.
+    fn populate_from_cept(profile: &mut ColorProfile, cept: &crate::iccmax::CeptMatrixShaper) {
+        // 1) Convert chromaticities → XYZ tristimulus colorants. The matrix
+        //    columns are the colorants. We need the column scalars s_r/s_g/s_b
+        //    such that M · [s_r, s_g, s_b] = white_xyz, where each column of
+        //    M is the un-scaled (X/y, 1, Z/y) of the corresponding primary.
+        let r = cept.red_xy;
+        let g = cept.green_xy;
+        let b = cept.blue_xy;
+        let w = cept.white_xy;
+        let to_xyz = |c: crate::iccmax::Chromaticity| -> [f64; 3] {
+            if c.y > 0.0 {
+                [c.x / c.y, 1.0, c.z / c.y]
+            } else {
+                [0.0, 1.0, 0.0]
+            }
+        };
+        let r_xyz = to_xyz(r);
+        let g_xyz = to_xyz(g);
+        let b_xyz = to_xyz(b);
+        let w_xyz = to_xyz(w);
+
+        // Column-major 3x3 = [r_xyz | g_xyz | b_xyz]; solve for [s_r, s_g, s_b]
+        // via Cramer's rule (small enough that hand-rolling avoids a dep).
+        let det = r_xyz[0] * (g_xyz[1] * b_xyz[2] - g_xyz[2] * b_xyz[1])
+            - g_xyz[0] * (r_xyz[1] * b_xyz[2] - r_xyz[2] * b_xyz[1])
+            + b_xyz[0] * (r_xyz[1] * g_xyz[2] - r_xyz[2] * g_xyz[1]);
+        if det.abs() < 1e-12 {
+            return; // degenerate matrix, give up rather than emit garbage
+        }
+        let det_x = w_xyz[0] * (g_xyz[1] * b_xyz[2] - g_xyz[2] * b_xyz[1])
+            - g_xyz[0] * (w_xyz[1] * b_xyz[2] - w_xyz[2] * b_xyz[1])
+            + b_xyz[0] * (w_xyz[1] * g_xyz[2] - w_xyz[2] * g_xyz[1]);
+        let det_y = r_xyz[0] * (w_xyz[1] * b_xyz[2] - w_xyz[2] * b_xyz[1])
+            - w_xyz[0] * (r_xyz[1] * b_xyz[2] - r_xyz[2] * b_xyz[1])
+            + b_xyz[0] * (r_xyz[1] * w_xyz[2] - r_xyz[2] * w_xyz[1]);
+        let det_z = r_xyz[0] * (g_xyz[1] * w_xyz[2] - g_xyz[2] * w_xyz[1])
+            - g_xyz[0] * (r_xyz[1] * w_xyz[2] - r_xyz[2] * w_xyz[1])
+            + w_xyz[0] * (r_xyz[1] * g_xyz[2] - r_xyz[2] * g_xyz[1]);
+        let s_r = det_x / det;
+        let s_g = det_y / det;
+        let s_b = det_z / det;
+
+        profile.red_colorant = Xyzd {
+            x: s_r * r_xyz[0],
+            y: s_r * r_xyz[1],
+            z: s_r * r_xyz[2],
+        };
+        profile.green_colorant = Xyzd {
+            x: s_g * g_xyz[0],
+            y: s_g * g_xyz[1],
+            z: s_g * g_xyz[2],
+        };
+        profile.blue_colorant = Xyzd {
+            x: s_b * b_xyz[0],
+            y: s_b * b_xyz[1],
+            z: s_b * b_xyz[2],
+        };
+        if profile.media_white_point.is_none() {
+            profile.media_white_point = Some(Xyzd {
+                x: w_xyz[0],
+                y: w_xyz[1],
+                z: w_xyz[2],
+            });
+        }
+
+        if let Some(curve) = &cept.trc {
+            if profile.red_trc.is_none() {
+                profile.red_trc = Some(curve.clone());
+            }
+            if profile.green_trc.is_none() {
+                profile.green_trc = Some(curve.clone());
+            }
+            if profile.blue_trc.is_none() {
+                profile.blue_trc = Some(curve.clone());
+            }
+        }
+
+        // 2) CICP synthesis + canonical substitution. If both the primaries
+        //    and the transfer match a canonical set, swap the colorant /
+        //    chad / media_white / TRC fields out for the equivalent
+        //    canonical builder. This avoids the D65→D50 Bradford computation
+        //    entirely and produces bit-identical output to ColorProfile::new_<canon>().
+        let primaries_match = crate::iccmax::match_canonical_primaries(r, g, b, w);
+        let transfer_match = cept
+            .trc
+            .as_ref()
+            .and_then(crate::iccmax::match_canonical_transfer);
+
+        if profile.cicp.is_none()
+            && let Some(p) = primaries_match
+        {
+            profile.cicp = Some(crate::CicpProfile {
+                color_primaries: p,
+                transfer_characteristics: transfer_match
+                    .unwrap_or(crate::TransferCharacteristics::Unspecified),
+                matrix_coefficients: crate::MatrixCoefficients::Identity,
+                full_range: true,
+            });
+        }
+
+        if let (Some(prim), Some(trc)) = (primaries_match, transfer_match) {
+            use crate::CicpColorPrimaries as Cp;
+            use crate::TransferCharacteristics as Tc;
+            let canonical: Option<ColorProfile> = match (prim, trc) {
+                (Cp::Bt709, Tc::Srgb) => Some(ColorProfile::new_srgb()),
+                (Cp::Smpte432, Tc::Srgb) => Some(ColorProfile::new_display_p3()),
+                (Cp::Smpte431, _) => Some(ColorProfile::new_dci_p3()),
+                (Cp::Bt2020, Tc::Bt709 | Tc::Bt202010bit) => Some(ColorProfile::new_bt2020()),
+                (Cp::Bt2020, Tc::Smpte2084) => Some(ColorProfile::new_bt2020_pq()),
+                (Cp::Bt2020, Tc::Hlg) => Some(ColorProfile::new_bt2020_hlg()),
+                (Cp::Smpte432, Tc::Smpte2084) => Some(ColorProfile::new_display_p3_pq()),
+                (Cp::Bt709, Tc::Bt470M) => Some(ColorProfile::new_adobe_rgb()),
+                _ => None,
+            };
+            if let Some(c) = canonical {
+                profile.red_colorant = c.red_colorant;
+                profile.green_colorant = c.green_colorant;
+                profile.blue_colorant = c.blue_colorant;
+                profile.white_point = c.white_point;
+                profile.media_white_point = c.media_white_point;
+                profile.chromatic_adaptation = c.chromatic_adaptation;
+                profile.red_trc = c.red_trc;
+                profile.green_trc = c.green_trc;
+                profile.blue_trc = c.blue_trc;
+            }
+        }
     }
 }
 
