@@ -30,7 +30,7 @@ use crate::cicp::{
     CicpColorPrimaries, ColorPrimaries, MatrixCoefficients, TransferCharacteristics,
 };
 use crate::dat::ColorDateTime;
-use crate::err::CmsError;
+use crate::err::{CmsError, invalid_profile};
 use crate::matrix::{Matrix3f, Xyz};
 use crate::reader::s15_fixed16_number_to_float;
 use crate::safe_math::{SafeAdd, SafeMul};
@@ -54,7 +54,7 @@ impl TryFrom<u32> for ProfileSignature {
         if value == u32::from_ne_bytes(*b"acsp").to_be() {
             return Ok(ProfileSignature::Acsp);
         }
-        Err(CmsError::InvalidProfile)
+        Err(invalid_profile())
     }
 }
 
@@ -111,8 +111,18 @@ impl TryFrom<u32> for ProfileVersion {
         // but reject invalid versions (v0.x) and unsupported versions (v5.x+ / ICC MAX)
         match major {
             0 => {
-                // Version 0.x is invalid - reject
-                Err(CmsError::InvalidProfile)
+                // Version 0.x is technically invalid per spec, but some real
+                // profiles in the wild (e.g. skcms-bundled AdobeColorSpin.icc)
+                // have a zero version field and lcms2 accepts them. With
+                // `permissive` enabled we treat them as v2.4 so they parse.
+                #[cfg(feature = "permissive")]
+                {
+                    Ok(ProfileVersion::V2_4)
+                }
+                #[cfg(not(feature = "permissive"))]
+                {
+                    Err(invalid_profile())
+                }
             }
             2 => {
                 // v2.x - map to the appropriate v2 minor version or highest known
@@ -139,9 +149,21 @@ impl TryFrom<u32> for ProfileVersion {
                 }
             }
             _ => {
-                // v5.x+ (ICC MAX) and other unknown versions - reject
-                // ICC MAX has different white point requirements and would produce wrong colors
-                Err(CmsError::InvalidProfile)
+                // v5.x+ (iccMAX) has different white point requirements and
+                // could produce slightly wrong colors if interpreted as v4.
+                // However, many v5 profiles in the wild (e.g. the ICC.org
+                // reference sRGB_D65_MAT / sRGB_D65_colorimetric / sRGB_ISO22028
+                // shipped by skcms) are structurally v4-compatible and lcms2
+                // parses them fine. With `permissive` enabled we treat them as
+                // v4.4 so callers can handle them; strict mode rejects.
+                #[cfg(feature = "permissive")]
+                {
+                    Ok(ProfileVersion::V4_4)
+                }
+                #[cfg(not(feature = "permissive"))]
+                {
+                    Err(invalid_profile())
+                }
             }
         }
     }
@@ -281,7 +303,20 @@ impl TryFrom<u32> for ProfileClass {
         } else if value == u32::from_ne_bytes(*b"nmcl").to_be() {
             return Ok(ProfileClass::Named);
         }
-        Err(CmsError::InvalidProfile)
+        // iccMAX adds additional classes (e.g. 'cenc' for color-encoding space,
+        // 'mid ' for MultiplexIdentification, etc.) that moxcms has no first-
+        // class support for. With `permissive` enabled, treat anything else as
+        // a ColorSpace profile — the downstream parser will still require the
+        // usual tag complement (XYZ/TRC or matrix-shaper) and will reject if
+        // neither is present, so this doesn't open the door to garbage.
+        #[cfg(feature = "permissive")]
+        {
+            Ok(ProfileClass::ColorSpace)
+        }
+        #[cfg(not(feature = "permissive"))]
+        {
+            Err(invalid_profile())
+        }
     }
 }
 
@@ -325,7 +360,7 @@ impl TryFrom<u32> for LutType {
         } else if value == u32::from_ne_bytes(*b"mBA ").to_be() {
             return Ok(LutType::LutMba);
         }
-        Err(CmsError::InvalidProfile)
+        Err(invalid_profile())
     }
 }
 
@@ -394,7 +429,7 @@ impl TryFrom<u32> for DataColorSpace {
         } else if value == u32::from_ne_bytes(*b"FCLR").to_be() {
             return Ok(DataColorSpace::Color15);
         }
-        Err(CmsError::InvalidProfile)
+        Err(invalid_profile())
     }
 }
 
@@ -684,13 +719,13 @@ impl ProfileHeader {
     /// Creates profile from the buffer
     pub(crate) fn new_from_slice(slice: &[u8]) -> Result<Self, CmsError> {
         if slice.len() < size_of::<ProfileHeader>() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let mut cursor = std::io::Cursor::new(slice);
         let mut buffer = [0u8; size_of::<ProfileHeader>()];
         cursor
             .read_exact(&mut buffer)
-            .map_err(|_| CmsError::InvalidProfile)?;
+            .map_err(|_| invalid_profile())?;
 
         let header = Self {
             size: u32::from_be_bytes(buffer[0..4].try_into().unwrap()),
@@ -704,7 +739,26 @@ impl ProfileHeader {
             data_color_space: DataColorSpace::try_from(u32::from_be_bytes(
                 buffer[16..20].try_into().unwrap(),
             ))?,
-            pcs: DataColorSpace::try_from(u32::from_be_bytes(buffer[20..24].try_into().unwrap()))?,
+            pcs: {
+                let raw = u32::from_be_bytes(buffer[20..24].try_into().unwrap());
+                match DataColorSpace::try_from(raw) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // iccMAX allows profile classes (e.g. 'cenc' color
+                        // encoding, 'spac' color-space) where PCS is zero /
+                        // unspecified. Default to XYZ in permissive mode.
+                        #[cfg(feature = "permissive")]
+                        {
+                            let _ = e;
+                            DataColorSpace::Xyz
+                        }
+                        #[cfg(not(feature = "permissive"))]
+                        {
+                            return Err(e);
+                        }
+                    }
+                }
+            },
             creation_date_time: ColorDateTime::new_from_slice(buffer[24..36].try_into().unwrap())?,
             signature: ProfileSignature::try_from(u32::from_be_bytes(
                 buffer[36..40].try_into().unwrap(),
@@ -985,13 +1039,13 @@ impl ColorProfile {
         let header = ProfileHeader::new_from_slice(slice)?;
         let tags_count = header.tag_count as usize;
         if slice.len() >= options.max_profile_size {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tags_end = tags_count
             .safe_mul(TAG_SIZE)?
             .safe_add(size_of::<ProfileHeader>())?;
         if slice.len() < tags_end {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tags_slice = &slice[size_of::<ProfileHeader>()..tags_end];
         let mut profile = ColorProfile {
@@ -1519,26 +1573,33 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "permissive"))]
     #[test]
     fn test_profile_version_parsing_rejected() {
-        // Invalid and unsupported versions should be rejected
+        // Strict mode: invalid and unsupported versions are rejected.
+        assert!(ProfileVersion::try_from(0x00000000).is_err(), "v0.0");
+        assert!(ProfileVersion::try_from(0x05000000).is_err(), "v5.0 iccMAX");
+        assert!(ProfileVersion::try_from(0x06000000).is_err(), "v6.0");
+    }
 
-        // v0.0 - invalid version (no such ICC spec exists)
-        assert!(
-            ProfileVersion::try_from(0x00000000).is_err(),
-            "v0.0 should be rejected"
+    #[cfg(feature = "permissive")]
+    #[test]
+    fn test_profile_version_parsing_permissive() {
+        // Permissive mode: v0.x → v2.4, v5.x+ → v4.4 (lcms2/skcms compatible).
+        assert_eq!(
+            ProfileVersion::try_from(0x00000000).unwrap(),
+            ProfileVersion::V2_4,
+            "v0.0 should be treated as v2.4"
         );
-
-        // v5.0 (iccMAX) - reject because it has different white point requirements
-        assert!(
-            ProfileVersion::try_from(0x05000000).is_err(),
-            "v5.0 should be rejected"
+        assert_eq!(
+            ProfileVersion::try_from(0x05000000).unwrap(),
+            ProfileVersion::V4_4,
+            "v5.0 iccMAX should be treated as v4.4"
         );
-
-        // v6.0 - future/unknown version
-        assert!(
-            ProfileVersion::try_from(0x06000000).is_err(),
-            "v6.0 should be rejected"
+        assert_eq!(
+            ProfileVersion::try_from(0x06000000).unwrap(),
+            ProfileVersion::V4_4,
+            "v6.0 should be treated as v4.4"
         );
     }
 
