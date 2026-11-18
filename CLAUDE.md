@@ -9,3 +9,9 @@ for the tested source, selected coverage and remaining numerical scope.
 
 The inherited external mirror workflow is restricted to its originating
 repository. Fork pushes must not attempt to publish to those destinations.
+
+Rust 1.100 Clippy also checks the final matrix-equality predicate. Its
+negated comparison keeps the original tolerance, row evaluation and NaN
+behavior. The complete scalar library tests pass with that compiler. The
+first attempted `matrix::` filter selected no tests and supplies no runtime
+evidence.

@@ -36,3 +36,7 @@ cmyk-lint-arm:
 
 cmyk-array-identity base output:
     python3 tools/check_array_iteration.py {{quote(base)}} {{quote(output)}}
+
+matrix-current-lint:
+    cargo +1.100.0 clippy -p moxcms --no-default-features --lib -- -D warnings
+    cargo +1.100.0 test -p moxcms --no-default-features --lib
