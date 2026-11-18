@@ -51,3 +51,6 @@ This project is licensed under either of
 - Apache License, Version 2.0 (see [LICENSE](LICENSE-APACHE.md))
 
 at your option.
+
+Direct CMYK float conversion controls and validation limits are documented in
+[CMYK float conversion](docs/CMYK_FLOAT_CONVERSION.md).

@@ -140,7 +140,7 @@ macro_rules! define_lut4_dispatch {
 
 #[cfg(feature = "any_to_any")]
 impl<T: Copy + PointeeSizeExpressible + AsPrimitive<f32>> KatanaLut4x3<T> {
-    fn to_pcs_impl<Fetch: Fn(f32, f32, f32, f32) -> Vector3f>(
+    fn to_pcs_impl<Fetch: Fn(f32, f32, f32, f32) -> Result<Vector3f, CmsError>>(
         &self,
         input: &[T],
         fetch: Fetch,
@@ -169,7 +169,7 @@ impl<T: Copy + PointeeSizeExpressible + AsPrimitive<f32>> KatanaLut4x3<T> {
             let linear_z = lut_interp_linear_float(src[2].as_() * norm_value, linearization_2);
             let linear_w = lut_interp_linear_float(src[3].as_() * norm_value, linearization_3);
 
-            let clut = fetch(linear_x, linear_y, linear_z, linear_w);
+            let clut = fetch(linear_x, linear_y, linear_z, linear_w)?;
 
             let pcs_x = lut_interp_linear_float(clut.v[0], &self.output[0]);
             let pcs_y = lut_interp_linear_float(clut.v[1], &self.output[1]);
@@ -192,26 +192,49 @@ impl<T: Copy + PointeeSizeExpressible + AsPrimitive<f32>> KatanaInitialStage<f32
         }
         let l_tbl = Hypercube::new(&self.clut, self.grid_size as usize, 3)?;
 
-        // If Source PCS is LAB trilinear should be used
+        #[cfg(feature = "options")]
+        if !T::FINITE && self.interpolation_method == InterpolationMethod::Tetrahedral {
+            return self.to_pcs_impl(input, |c, m, y, k| {
+                let grid = self.grid_size as usize;
+                if grid == 0 {
+                    return Err(CmsError::UnsupportedProfileConnection);
+                }
+                let position = c.clamp(0.0, 1.0) * (grid - 1) as f32;
+                let lower = position.floor() as usize;
+                let upper = (lower + 1).min(grid - 1);
+                let slab = grid * grid * grid * 3;
+                let first =
+                    crate::Cube::new(&self.clut[lower * slab..], grid, 3)?.tetra_vec3(m, y, k);
+                let second =
+                    crate::Cube::new(&self.clut[upper * slab..], grid, 3)?.tetra_vec3(m, y, k);
+                let fraction = position - lower as f32;
+                Ok(Vector3f {
+                    v: std::array::from_fn(|channel| {
+                        first.v[channel] + (second.v[channel] - first.v[channel]) * fraction
+                    }),
+                })
+            });
+        }
+        // Preserve the default PCS interpolation when no tetrahedral method is requested.
         if self.pcs == DataColorSpace::Lab || self.pcs == DataColorSpace::Xyz {
-            return self.to_pcs_impl(input, |x, y, z, w| l_tbl.quadlinear_vec3(x, y, z, w));
+            return self.to_pcs_impl(input, |x, y, z, w| Ok(l_tbl.quadlinear_vec3(x, y, z, w)));
         }
 
         match self.interpolation_method {
             #[cfg(feature = "options")]
             InterpolationMethod::Tetrahedral => {
-                self.to_pcs_impl(input, |x, y, z, w| l_tbl.tetra_vec3(x, y, z, w))
+                self.to_pcs_impl(input, |x, y, z, w| Ok(l_tbl.tetra_vec3(x, y, z, w)))
             }
             #[cfg(feature = "options")]
             InterpolationMethod::Pyramid => {
-                self.to_pcs_impl(input, |x, y, z, w| l_tbl.pyramid_vec3(x, y, z, w))
+                self.to_pcs_impl(input, |x, y, z, w| Ok(l_tbl.pyramid_vec3(x, y, z, w)))
             }
             #[cfg(feature = "options")]
             InterpolationMethod::Prism => {
-                self.to_pcs_impl(input, |x, y, z, w| l_tbl.prism_vec3(x, y, z, w))
+                self.to_pcs_impl(input, |x, y, z, w| Ok(l_tbl.prism_vec3(x, y, z, w)))
             }
             InterpolationMethod::Linear => {
-                self.to_pcs_impl(input, |x, y, z, w| l_tbl.quadlinear_vec3(x, y, z, w))
+                self.to_pcs_impl(input, |x, y, z, w| Ok(l_tbl.quadlinear_vec3(x, y, z, w)))
             }
         }
     }

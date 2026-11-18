@@ -37,6 +37,44 @@ use crate::{
 };
 use num_traits::AsPrimitive;
 
+// Reuse the extended matrix/curve evaluator before copying float output.
+#[cfg(feature = "extended_range")]
+struct KatanaXyzToRgbExtended<T: Clone> {
+    evaluator: crate::conversions::prelude_lut_xyz_rgb::XyzToRgbStageExtended<T>,
+    layout: Layout,
+}
+
+#[cfg(feature = "extended_range")]
+impl<T: Clone + AsPrimitive<f32>> KatanaFinalStage<f32, T> for KatanaXyzToRgbExtended<T>
+where
+    f32: AsPrimitive<T>,
+{
+    fn to_output(&self, src: &mut [f32], dst: &mut [T]) -> Result<(), CmsError> {
+        let channels = self.layout.channels();
+        if !src.len().is_multiple_of(3) || !dst.len().is_multiple_of(channels) {
+            return Err(CmsError::LaneMultipleOfChannels);
+        }
+        if src.len() / 3 != dst.len() / channels {
+            return Err(CmsError::LaneSizeMismatch);
+        }
+        crate::InPlaceStage::transform(&self.evaluator, src)?;
+        for (source, target) in src
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(dst.chunks_exact_mut(channels))
+        {
+            for channel in 0..3 {
+                target[channel] = source[channel].as_();
+            }
+            if channels == 4 {
+                target[3] = 1.0f32.as_();
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct KatanaXyzToRgbStage<T: Clone, const LAYOUT: u8> {
     pub(crate) r_gamma: Box<[T; 65536]>,
     pub(crate) g_gamma: Box<[T; 65536]>,
@@ -116,28 +154,33 @@ where
     f32: AsPrimitive<T>,
     u32: AsPrimitive<T>,
 {
-    // if !T::FINITE {
-    // if let Some(extended_gamma) = dest.try_extended_gamma_evaluator() {
-    //     let xyz_to_rgb = dest.rgb_to_xyz_matrix().inverse();
-    //
-    //     let mut matrices = vec![Matrix3f {
-    //         v: [
-    //             [65535.0 / 32768.0, 0.0, 0.0],
-    //             [0.0, 65535.0 / 32768.0, 0.0],
-    //             [0.0, 0.0, 65535.0 / 32768.0],
-    //         ],
-    //     }];
-    //
-    //     matrices.push(xyz_to_rgb.to_f32());
-    //     let xyz_to_rgb_stage = XyzToRgbStageExtended::<T> {
-    //         gamma_evaluator: extended_gamma,
-    //         matrices,
-    //         phantom_data: PhantomData,
-    //     };
-    //     xyz_to_rgb_stage.transform(lut)?;
-    //     return Ok(());
-    // }
-    // }
+    #[cfg(feature = "extended_range")]
+    if !T::FINITE
+        && options.allow_extended_range_rgb_xyz
+        && let Some(gamma_evaluator) = dest.try_extended_gamma_evaluator()
+    {
+        let matrices = vec![
+            Matrix3f {
+                v: [
+                    [65535.0 / 32768.0, 0.0, 0.0],
+                    [0.0, 65535.0 / 32768.0, 0.0],
+                    [0.0, 0.0, 65535.0 / 32768.0],
+                ],
+            },
+            dest.rgb_to_xyz_matrix().inverse().to_f32(),
+        ];
+        return Ok(KatanaXyzRgbState {
+            stages: Vec::new(),
+            final_stage: Box::new(KatanaXyzToRgbExtended {
+                evaluator: crate::conversions::prelude_lut_xyz_rgb::XyzToRgbStageExtended::<T> {
+                    gamma_evaluator,
+                    matrices,
+                    phantom_data: std::marker::PhantomData,
+                },
+                layout: dest_layout,
+            }),
+        });
+    }
     let gamma_map_r = dest.build_gamma_table::<T, 65536, GAMMA_LUT, BIT_DEPTH>(
         &dest.red_trc,
         options.allow_use_cicp_transfer,

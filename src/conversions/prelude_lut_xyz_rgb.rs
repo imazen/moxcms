@@ -96,7 +96,7 @@ use crate::trc::ToneCurveEvaluator;
 
 #[cfg(feature = "extended_range")]
 pub(crate) struct XyzToRgbStageExtended<T: Clone> {
-    pub(crate) gamma_evaluator: Box<dyn ToneCurveEvaluator>,
+    pub(crate) gamma_evaluator: Box<dyn ToneCurveEvaluator + Send + Sync>,
     pub(crate) matrices: Vec<Matrix3f>,
     pub(crate) phantom_data: PhantomData<T>,
 }

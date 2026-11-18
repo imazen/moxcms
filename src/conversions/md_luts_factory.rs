@@ -165,10 +165,10 @@ where
     f32: AsPrimitive<T>,
 {
     if (dst_layout == Layout::GrayAlpha && dest.color_space == DataColorSpace::Gray)
-        || (dst_layout == Layout::Rgba || dest.color_space == DataColorSpace::Rgb)
+        || (dst_layout == Layout::Rgba && dest.color_space == DataColorSpace::Rgb)
     {
         return if (src_layout == Layout::GrayAlpha && source.color_space == DataColorSpace::Gray)
-            || (src_layout == Layout::Rgba || source.color_space == DataColorSpace::Rgb)
+            || (src_layout == Layout::Rgba && source.color_space == DataColorSpace::Rgb)
         {
             Some(Box::new(CopyAlphaStage {
                 src_layout,
@@ -186,4 +186,41 @@ where
         };
     }
     None
+}
+
+#[cfg(test)]
+mod alpha_finalizer_tests {
+    use super::*;
+    #[test]
+    fn alpha_presence_uses_profile_model_and_layout_together() {
+        let rgb = ColorProfile::new_srgb();
+        let gray = ColorProfile::new_gray_with_gamma(1.0);
+        let mut cmyk = rgb.clone();
+        cmyk.color_space = DataColorSpace::Cmyk;
+        let source = [0.1_f32, 0.2, 0.3, 0.4];
+        for (profile, layout, destination, dst_layout, index, expected) in [
+            (&cmyk, Layout::Rgba, &rgb, Layout::Rgba, 3, 1.0),
+            (&rgb, Layout::Rgb, &rgb, Layout::Rgba, 3, 1.0),
+            (&rgb, Layout::Rgba, &rgb, Layout::Rgba, 3, 0.4),
+            (&gray, Layout::GrayAlpha, &rgb, Layout::Rgba, 3, 0.2),
+            (&gray, Layout::Gray, &gray, Layout::GrayAlpha, 1, 1.0),
+            (&gray, Layout::GrayAlpha, &gray, Layout::GrayAlpha, 1, 0.2),
+            (&rgb, Layout::Rgba, &gray, Layout::GrayAlpha, 1, 0.4),
+        ] {
+            let finalizer =
+                prepare_alpha_finalizer::<f32>(layout, profile, dst_layout, destination, 32)
+                    .unwrap();
+            let mut output = vec![123.0; dst_layout.channels()];
+            finalizer
+                .finalize(&source[..layout.channels()], &mut output)
+                .unwrap();
+            assert_eq!(output[index], expected);
+        }
+        for profile in [&cmyk, &rgb, &gray] {
+            assert!(
+                prepare_alpha_finalizer::<f32>(Layout::Rgba, profile, Layout::Rgb, &rgb, 32)
+                    .is_none()
+            );
+        }
+    }
 }
