@@ -4,7 +4,13 @@ import argparse,json
 from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('coverage',type=Path);p.add_argument('output',type=Path);a=p.parse_args()
 data=json.loads(a.coverage.read_text())['data'][0];rows=[]
-for label,symbol,limits in [('extended-output','KatanaXyzToRgbExtended',None),('alpha-selection','prepare_alpha_finalizer',None),('tetrahedral-selection','KatanaLut4x3',(196,217)),('extended-selection','katana_prepare_inverse_lut_rgb_xyz',(158,183))]:
+root=Path(__file__).resolve().parents[1]
+def bounds(name,start,end):
+ text=(root/name).read_text();left=text.index(start);right=text.index(end,left)
+ return text[:left].count('\n')+1,text[:right].count('\n')
+tetra=bounds('src/conversions/lut4.rs','if !T::FINITE && self.interpolation_method','// Preserve the default PCS')
+extended=bounds('src/conversions/katana/xyz_rgb.rs','if !T::FINITE','let gamma_map_r')
+for label,symbol,limits in [('extended-output','KatanaXyzToRgbExtended',None),('alpha-selection','prepare_alpha_finalizer',None),('tetrahedral-selection','KatanaLut4x3',tetra),('extended-selection','katana_prepare_inverse_lut_rgb_xyz',extended)]:
  regions={}
  for function in data['functions']:
   if symbol not in function['name']:continue

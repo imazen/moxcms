@@ -57,3 +57,9 @@ changed from 0.00302953017 to 0.00029194355 with the selected direct tetrahedral
 float path. This is one profile and one gradient, not universal CMS parity.
 Allocator-failure injection, broad profile qualification and cross-platform
 numerical qualification remain separate work.
+
+The dedicated CI jobs explicitly enable `any_to_any,extended_range,options` on
+Linux x64/ARM64, macOS ARM64 and Windows ARM64, with MSRV and stable Rust, plus
+i686 through `cross`. Default-feature test jobs alone do not execute the
+feature-gated direct-float regression. Platform runtime results must be checked
+on the commit's own workflow; cross compilation is not a runtime result.

@@ -24,7 +24,7 @@ jobs:
       matrix:
         rust: [ "1.89.0", stable ]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.rust }}
@@ -61,7 +61,7 @@ jobs:
     name: Testing x86 SSE isolated
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - run: |
           sudo apt-get update
@@ -90,7 +90,7 @@ jobs:
     name: Testing x86 AVX2 isolated (no FMA)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - run: |
           sudo apt-get update
@@ -119,7 +119,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo test --no-default-features
       - run: cargo test --features neon_shaper_paths
@@ -133,7 +133,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --no-default-features
       - run: cargo test --features avx_shaper_paths
@@ -152,7 +152,7 @@ jobs:
     name: Clippy x86 Stable
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo clippy --no-default-features                             -- -D warnings
       - run: cargo clippy --features avx_shaper_paths                       -- -D warnings
@@ -172,7 +172,7 @@ jobs:
     name: Clippy x86 Nightly
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - run: rustup component add clippy
       - run: cargo clippy --no-default-features                            -- -D warnings
@@ -191,7 +191,7 @@ jobs:
     name: Clippy ARM
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo clippy --no-default-features                             -- -D warnings
       - run: cargo clippy --features neon_shaper_paths                      -- -D warnings
@@ -209,7 +209,7 @@ jobs:
       matrix:
         feature: [ neon ]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo install cargo-fuzz
       - run: cargo fuzz run unsafe --no-default-features --features ${{ matrix.feature }} -- -max_total_time=16
@@ -222,7 +222,7 @@ jobs:
       matrix:
         feature: [ sve ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify SVE2 available
         run: |
@@ -242,7 +242,7 @@ jobs:
       matrix:
         feature: [ sse, avx ]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo install cargo-fuzz
       - run: cargo fuzz run unsafe --no-default-features --features ${{ matrix.feature }} -- -max_total_time=16
@@ -252,8 +252,37 @@ jobs:
     name: Fuzzing Reader
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo install cargo-fuzz
       - run: cargo fuzz run safe_read --no-default-features -- -max_total_time=20 -max_len=512000
       - run: cargo fuzz run safe_read_create --no-default-features -- -max_total_time=20 -max_len=512000
+
+
+  cmyk_float_native:
+    name: CMYK float (${{ matrix.os }}, ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-11-arm]
+        rust: ["1.89.0", stable]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+      - name: Direct CMYK float and alpha contracts
+        run: cargo test -p moxcms --no-default-features --features any_to_any,extended_range,options --lib --test cmyk_float_lut
+
+  cmyk_float_i686:
+    name: CMYK float (cross/i686)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Direct CMYK float and alpha contracts
+        run: cross test -p moxcms --target i686-unknown-linux-gnu --no-default-features --features any_to_any,extended_range,options --lib --test cmyk_float_lut
