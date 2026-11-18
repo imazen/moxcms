@@ -31,10 +31,15 @@ control passes. The alpha test separately exposed K copied as alpha.
 
 `just cmyk-float-check` runs the focused and library checks plus feature builds.
 The functional checks and feature builds pass locally with Rust 1.99.1.
-Strict Clippy is not green: the library has 44 existing constant-chunk lints.
+The initial strict Clippy run exposed 44 existing constant-chunk lints.
 A separate library-and-tests warning census reports 96 diagnostics on both
 baseline and candidate, with no new diagnostic after normalizing source spans.
-No lint allowance or existing expectation was changed.
+No lint allowance or existing expectation was changed. The subsequent fixed-array
+iteration maintenance preserves the same complete chunks and sample order;
+normalizing iterator spellings and whitespace reproduces the preceding source
+on every changed file. Selected scalar/default x64 and AArch64 Clippy checks
+now pass with warnings denied; their library and float controls pass too.
+Other CI feature permutations retain their own verdicts.
 
 `just cmyk-float-coverage <new-directory>` retains LLVM JSON;
 `just cmyk-float-region-report <json> <output>` reports selected regions. The
