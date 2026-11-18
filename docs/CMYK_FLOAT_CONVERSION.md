@@ -63,3 +63,16 @@ Linux x64/ARM64, macOS ARM64 and Windows ARM64, with MSRV and stable Rust, plus
 i686 through `cross`. Default-feature test jobs alone do not execute the
 feature-gated direct-float regression. Platform runtime results must be checked
 on the commit's own workflow; cross compilation is not a runtime result.
+
+
+## CPU-emulation environment control
+
+Run 44297011926 on Ubuntu 26.04.1 fails even the trivial Rust startup test.
+The AVX2-without-FMA process exits with `Fatal glibc error: CPU does not
+support x86-64-v3`; Nehalem faults at a VEX instruction before the test
+banner. The baseline and candidate both pass the exact nightly startup
+control locally. The two CPU-mask jobs use Ubuntu 24.04 so their loader can
+run under those masks. Their original CPU features, nightly selection and
+complete library test loops remain unchanged. The retained startup control
+and instruction traces continue to run before the suite. Native platform
+jobs retain their existing runners. Remote confirmation remains required.

@@ -30,3 +30,10 @@ candidate, including CI's exact nightly 1.102.0 (59cbdee2e). This does not
 explain the remote failure. The CI jobs now retain a startup instruction
 trace and minimal-process control before the unchanged full test loops.
 The diagnostic records child status; it does not replace a test verdict.
+
+
+The remote CPU trace now identifies the host loader: Ubuntu 26.04.1's
+AVX2/no-FMA startup exits with `CPU does not support x86-64-v3`, including
+the trivial test process. The two emulation jobs now select Ubuntu 24.04;
+CPU masks, nightly and full test loops are unchanged. Native jobs retain
+their runners. This is an environment repair awaiting its remote verdict.

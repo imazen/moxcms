@@ -59,7 +59,8 @@ jobs:
 
   tests_x86_sse_isolated:
     name: Testing x86 SSE isolated
-    runs-on: ubuntu-latest
+    # The emulated masks exclude instructions required by the latest host loader.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
@@ -95,7 +96,8 @@ jobs:
 
   tests_x86_avx2_isolated:
     name: Testing x86 AVX2 isolated (no FMA)
-    runs-on: ubuntu-latest
+    # The emulated masks exclude instructions required by the latest host loader.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
