@@ -66,6 +66,13 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user
+      - name: Retain CPU startup instruction trace
+        run: python3 tools/cpu_ci_probe.py 'Nehalem' '+sse4.1,-avx,-avx2,-fma' cpu-startup
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cpu-startup-Nehalem
+          path: cpu-startup
       - run: |
           failed=0
           tests=$(cargo +nightly test --lib -- --list 2>/dev/null | grep ': test' | sed 's/: test//')
@@ -95,6 +102,13 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user
+      - name: Retain CPU startup instruction trace
+        run: python3 tools/cpu_ci_probe.py 'Haswell-noTSX,avx2=on,fma=off' '+avx2,-fma' cpu-startup
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cpu-startup-Haswell-noTSX
+          path: cpu-startup
       - run: |
           failed=0
           tests=$(cargo +nightly test --lib -- --list 2>/dev/null | grep ': test' | sed 's/: test//')

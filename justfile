@@ -40,3 +40,6 @@ cmyk-array-identity base output:
 matrix-current-lint:
     cargo +1.100.0 clippy -p moxcms --no-default-features --lib -- -D warnings
     cargo +1.100.0 test -p moxcms --no-default-features --lib
+
+cpu-nehalem-process qemu baseline output toolchain="nightly":
+    python3 tools/check_cpu_process.py {{quote(qemu)}} {{quote(baseline)}} {{quote(output)}} --toolchain {{quote(toolchain)}}

@@ -22,3 +22,11 @@ expression now returns `is_curve_linear16(lut)` directly, preserving the
 earlier empty-LUT and curve branches. Strict scalar Clippy and all scalar
 library tests pass with Rust 1.100. CPU-emulation CI remains under a
 separate instruction-trace investigation.
+
+
+The inherited SSE/AVX2-isolated jobs still report SIGILL. Local Nehalem
+controls pass for a trivial Rust test, the unchanged baseline and the
+candidate, including CI's exact nightly 1.102.0 (59cbdee2e). This does not
+explain the remote failure. The CI jobs now retain a startup instruction
+trace and minimal-process control before the unchanged full test loops.
+The diagnostic records child status; it does not replace a test verdict.
