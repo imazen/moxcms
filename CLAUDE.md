@@ -15,3 +15,10 @@ negated comparison keeps the original tolerance, row evaluation and NaN
 behavior. The complete scalar library tests pass with that compiler. The
 first attempted `matrix::` filter selected no tests and supplies no runtime
 evidence.
+
+
+Rust 1.100 also flags the LUT linearity boolean tail in `trc.rs`. The
+expression now returns `is_curve_linear16(lut)` directly, preserving the
+earlier empty-LUT and curve branches. Strict scalar Clippy and all scalar
+library tests pass with Rust 1.100. CPU-emulation CI remains under a
+separate instruction-trace investigation.
