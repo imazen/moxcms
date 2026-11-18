@@ -8,10 +8,11 @@ on:
 
 jobs:
   mirror:
+    if: github.repository == 'awxkee/moxcms'
     runs-on: ubuntu-latest
     environment: mirroring
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
